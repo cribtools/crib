@@ -19,3 +19,8 @@ bigtools = "0.5.4"
 url = "2.5.4"
 http = "1.2.0"
 object_store = { version = "0.11.2", features = ["aws", "http"] }
+aws-config = "1.5.15"
+aws-sdk-s3 = "1.71.0"
+aws-credential-types = "1.2.1"
+async-trait = "0.1.85"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }

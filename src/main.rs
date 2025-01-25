@@ -1,9 +1,7 @@
 use bigtools::utils::remote_file::RemoteFile;
-use crib::{bigwig::bigwig_print, file::FileLocation};
+use crib::{bigwig::bigwig_print, file::FileLocation, view::signed_url, Error as CribError};
 use gannot::genome::{Error as GenomeError, GenomicRange};
-use http::Method;
-use object_store::{aws::AmazonS3Builder, signer::Signer, BackoffConfig, ObjectStore, RetryConfig};
-use std::{fs::File, sync::Arc, time::Duration};
+use std::fs::File;
 
 use clap::{Args, Parser, Subcommand};
 
@@ -65,27 +63,11 @@ fn view(select_args: &ViewArgs) -> anyhow::Result<()> {
             Ok(())
         }
         FileLocation::S3(url) => {
-            let (_, path) = object_store::parse_url(url)?;
-            let builder = AmazonS3Builder::from_env()
-                .with_url(url.as_str())
-                .with_retry(RetryConfig {
-                    backoff: BackoffConfig::default(),
-                    max_retries: 0,
-                    retry_timeout: Duration::default(),
-                });
-            let storage = Arc::new(builder.build()?);
+            let signed_url = signed_url(url)?;
 
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_io()
-                .enable_time()
-                .build()?;
-
-            let url = runtime.block_on(async {
-                let storage = Arc::clone(&storage);
-                storage.signed_url(Method::GET, &path, Duration::from_secs(5 * 60)).await
-            })?;
-            let remote_file = RemoteFile::new(url.as_str());
-            let mut reader = bigtools::BigWigRead::open(remote_file)?;
+            let remote_file = RemoteFile::new(signed_url.as_str());
+            let mut reader = bigtools::BigWigRead::open(remote_file)
+                .map_err(|_| CribError::IoError("could not open remote file".to_string()))?;
             let range = select_args.location.range_0halfopen();
             let coord_start = range.start.try_into()?;
             let coord_end = range.end.try_into()?;
@@ -94,14 +76,15 @@ fn view(select_args: &ViewArgs) -> anyhow::Result<()> {
                 select_args.location.seqid().to_string(),
                 coord_start,
                 coord_end,
-            );     
-
+            );
             Ok(())
         }
     }
 }
 
 fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt::init();
+
     let cli = Cli::parse();
 
     match &cli.command {
