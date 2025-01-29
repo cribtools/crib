@@ -1,5 +1,5 @@
 use bigtools::utils::remote_file::RemoteFile;
-use crib::{bigwig::bigwig_print, file::FileLocation, view::signed_url, Error as CribError};
+use crib::{bigwig::bigwig_print, file::{FileLocation, presigned_url}, Error as CribError};
 use gannot::genome::{Error as GenomeError, GenomicRange};
 use std::fs::File;
 
@@ -62,10 +62,10 @@ fn view(select_args: &ViewArgs) -> anyhow::Result<()> {
             );
             Ok(())
         }
-        FileLocation::S3(url) => {
-            let signed_url = signed_url(url)?;
+        FileLocation::S3(s3_url) => {
+            let url = presigned_url(s3_url)?;
 
-            let remote_file = RemoteFile::new(signed_url.as_str());
+            let remote_file = RemoteFile::new(url.as_str());
             let mut reader = bigtools::BigWigRead::open(remote_file)
                 .map_err(|_| CribError::IoError("could not open remote file".to_string()))?;
             let range = select_args.location.range_0halfopen();

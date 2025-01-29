@@ -1,6 +1,5 @@
 pub mod bigwig;
 pub mod file;
-pub mod view;
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
