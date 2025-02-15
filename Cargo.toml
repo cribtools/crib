@@ -1,6 +1,6 @@
 [package]
 name = "crib"
-version = "0.1.1"
+version = "0.1.2"
 description = """Library and CLI for reading and writing genome track files."""
 readme = "README.md"
 authors = ["Garth Ilsley"]
@@ -10,17 +10,20 @@ edition = "2024"
 repository = "https://github.com/gannot/crib"
 
 [dependencies]
-clap = { version = "4.5.27", features = ["derive"] }
-anyhow = "1.0.94"
+clap = { version = "4.5.29", features = ["derive"] }
+anyhow = "1.0.95"
 thiserror = "2.0.11"
-tokio = { version = "1.43.0", features = ["fs", "io-util", "rt-multi-thread", "macros"] }
+tokio = { version = "1.43.0", features = ["fs", "io-util", "rt-multi-thread"] }
 gannot = "0.0.2"
-bigtools = "0.5.4"
+bigtools = "0.5.5"
 url = "2.5.4"
 http = "1.2.0"
 object_store = { version = "0.11.2", features = ["aws", "http"] }
-aws-config = "1.5.15"
-aws-sdk-s3 = "1.71.0"
+aws-config = "1.5.16"
+aws-sdk-s3 = "1.76.0"
 aws-credential-types = "1.2.1"
-async-trait = "0.1.85"
+async-trait = "0.1.86"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+log = "0.4.25"
+futures-util = "0.3.31"
+pin-project = "1.1.9"
