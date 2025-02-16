@@ -1,5 +1,5 @@
 # Crib
-Crib is a library for reading genome track files, mainly to support [cribtools](https://crates.io/crates/crib).
+Crib is a library for reading genome track files, mainly to support [cribtools](https://crates.io/crates/cribtools).
 
 Its functionality is currently limited to reading bigWig files using [bigtools](https://crates.io/crates/bigtools).
 
