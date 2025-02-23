@@ -1,3 +1,5 @@
+#![feature(let_chains)]
+
 use bigtools::{BBIReadError, BigWigReadOpenError};
 
 pub mod bigwig;

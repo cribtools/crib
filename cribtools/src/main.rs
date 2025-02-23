@@ -1,10 +1,11 @@
 use crib::{
     Error as CribError,
-    bigwig::{BigWigFile, bigwig_print},
+    bigwig::BigWigFile,
     file::FileLocation,
     object_store::presigned_urls,
 };
 use gannot::genome::{Error as GenomeError, GenomicRange};
+use tracing_subscriber::EnvFilter;
 
 use std::fs::File;
 use futures_util::{StreamExt, stream::FuturesOrdered};
@@ -84,20 +85,22 @@ async fn view(select_args: ViewArgs) -> anyhow::Result<()> {
         )
     })?;
 
-    bigwig_print(
-        bw_files,
-        select_args.location.seqid(),
-        coord_start,
-        coord_end,
-    )
-    .await?;
+    let stdout = std::io::stdout();
+    let lock = stdout.lock();
+    let writer = std::io::BufWriter::new(lock);
+
+    crib::bigwig::bigwig_print_stream(writer, bw_files, select_args.location.seqid(), coord_start, coord_end).await?;
 
     Ok(())
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
+    let (non_blocking, _guard) = tracing_appender::non_blocking(std::io::stderr());
+    tracing_subscriber::fmt()
+        .with_writer(non_blocking)
+        .with_env_filter(EnvFilter::from_default_env())
+        .init();
 
     let cli = Cli::parse();
 
