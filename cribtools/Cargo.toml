@@ -7,7 +7,7 @@ authors = ["Garth Ilsley"]
 license = "MIT OR Apache-2.0"
 rust-version = "1.85"
 edition = "2024"
-repository = "https://github.com/gannot/crib"
+repository = "https://github.com/cribtools/crib"
 
 [dependencies]
 crib = { version = "0.1.4", path = "../crib" }
@@ -15,12 +15,9 @@ clap = { version = "4.5.29", features = ["derive"] }
 anyhow = "1.0.95"
 thiserror = "2.0.11"
 tokio = { version = "1.43.0", features = ["fs", "io-util", "rt-multi-thread"] }
-gannot = { path = "../../gannot" }
-bigtools = "0.5.5"
+gannot = { version = "0.1.0", path = "../../gannot" }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
-tracing-appender = "0.2"
-futures-util = "0.3.31"
 
 [[bin]]
 name = "crib"

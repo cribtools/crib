@@ -3,7 +3,7 @@ use test_log::test;
 use tracing::info;
 
 struct BigWigMockData {
-    data: Vec<BigWigFile>,
+    data: Vec<MockFileLocation>,
     expected_output: String,
 }
 
@@ -12,10 +12,60 @@ impl BigWigMockData {
         BigWigMockData {
             data: data
                 .into_iter()
-                .map(|data| BigWigFile::Iter(data.into()))
+                .map(|data| MockFileLocation {data: data.into()})
                 .collect(),
             expected_output: output,
         }
+    }
+}
+
+struct MockFileLocation {
+    data: BbiIter
+}
+
+impl BbiFileLocation for MockFileLocation {
+    async fn open(self) -> Result<Vec<impl BbiFile>, CribError> {
+        Ok(vec![self.data])
+    }
+}
+
+struct BbiIter {
+    inner: std::vec::IntoIter<Value>,
+}
+
+impl BbiIter {
+    fn new(inner: std::vec::IntoIter<Value>) -> BbiIter {
+        BbiIter { inner }
+    }
+}
+
+impl Iterator for BbiIter {
+    type Item = Result<Value, BBIReadError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next().map(Ok)
+    }
+}
+
+impl From<Vec<(u32, u32, f32)>> for BbiIter {
+    fn from(val: Vec<(u32, u32, f32)>) -> Self {
+        let data: Vec<_> = val
+            .into_iter()
+            .map(|(start, end, value)| Value { start, end, value })
+            .collect();
+        BbiIter::new(data.into_iter())
+    }
+}
+
+
+impl BbiFile for BbiIter {
+    fn get_intervals(
+        self,
+        _seqid: &SeqId,
+        _coord_start: u32,
+        _coord_end: u32,
+    ) -> Result<Box<dyn Iterator<Item = Result<Value, BBIReadError>>>, CribError> {
+        Ok(Box::new(self))
     }
 }
 
@@ -118,13 +168,15 @@ fn setup_invalid() -> Vec<BigWigMockData> {
  async fn check_valid() {
     let test_data = setup_valid();
     let seqid: SeqId = "1".into();
+    let genomic_range = GenomicRange::from_1closed(seqid.clone(), 1..=1).unwrap();
 
     for (i, bigwig_mock) in test_data.into_iter().enumerate() {
+        let bbi_mux = BbiMux::try_open(bigwig_mock.data, genomic_range.clone()).await.unwrap();
+        let data_stream = DataStream { seqid: seqid.clone(), bbi_mux };
+
         info!("output {}", i);
         let mut buf = Vec::new();
-        bigwig_print_stream(&mut buf, bigwig_mock.data, &seqid, 1, 1000)
-            .await
-            .unwrap();
+        data_stream.bg_write(&mut buf).await.unwrap();
 
         let output = String::from_utf8(buf).unwrap();
         info!("{}", output);
@@ -140,19 +192,36 @@ fn setup_invalid() -> Vec<BigWigMockData> {
 async fn check_invalid() {
     let test_data = setup_invalid();
     let seqid: SeqId = "1".into();
+    let genomic_range = GenomicRange::from_1closed(seqid.clone(), 1..=1).unwrap();
 
     for (i, bigwig_mock) in test_data.into_iter().enumerate() {
-        info!("output {}", i);
-        let mut buf = Vec::new();
-        let result = bigwig_print_stream(&mut buf, bigwig_mock.data, &seqid, 1, 1000).await;
-        info!("{:?}", result);
-        match result {
-            Err(CribError::InvalidDataFormat(_)) => {}
-            _ => {
-                let output = String::from_utf8(buf).unwrap();
-                info!("output\n{}", output);
-                panic!("output {i} should have failed with InvalidDataFormat.");
+        if let Ok(bbi_mux) = BbiMux::try_open(bigwig_mock.data, genomic_range.clone()).await {
+            let data_stream = DataStream { seqid: seqid.clone(), bbi_mux };
+
+            info!("output {}", i);
+            let mut buf = Vec::new();
+            let result = data_stream.bg_write(&mut buf).await;
+            info!("{:?}", result);
+            match result {
+                Err(CribError::InvalidDataFormat(_)) => {}
+                _ => {
+                    let output = String::from_utf8(buf).unwrap();
+                    info!("output\n{}", output);
+                    panic!("output {i} should have failed with InvalidDataFormat.");
+                }
             }
         }
+    }
+}
+
+#[test(tokio::test)]
+async fn bbi_mux_empty_open() {
+    let seqid: SeqId = "1".into();
+    let location = GenomicRange::from_1closed(seqid.clone(), 1..=1).unwrap();
+    let no_files = Vec::<FileLocation>::new();
+    let mut bbi_mux = BbiMux::try_open(no_files, location).await.unwrap();
+    let first_value = bbi_mux.next().await;
+    if first_value.is_some() {
+        panic!("expected none");
     }
 }

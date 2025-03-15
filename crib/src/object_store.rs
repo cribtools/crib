@@ -8,6 +8,16 @@ use url::Url;
 
 use crate::Error as CribError;
 
+impl From<::object_store::Error> for CribError {
+    fn from(err: ::object_store::Error) -> Self {
+        let mut inmost_error: &dyn std::error::Error = &err;
+        while let Some(source) = inmost_error.source() {
+            inmost_error = source;
+        }
+        CribError::ObjectStore(inmost_error.to_string())
+    }
+}
+
 pub async fn use_aws_config(object_url: &Url) -> Result<(Arc<AmazonS3>, object_store::path::Path), CribError> {
     let (_, path) = object_store::parse_url(object_url)?;
 
