@@ -1,14 +1,16 @@
-const CHANNEL_BUFFER_SIZE: usize = 10_000_000;
-// an unbounded channel gives slightly better performance
+const CHANNEL_BUFFER_SIZE: usize = 100_000;
 
 use crate::{Error as CribError, file::FileLocation, object_store::presigned_urls};
-use bigtools::{utils::remote_file::RemoteFile, BBIReadError, BigWigReadOpenError, Value};
-use futures_util::{FutureExt, Stream, StreamExt, stream::FuturesOrdered};
+use bigtools::{BBIReadError, BigWigReadOpenError, Value, utils::remote_file::RemoteFile};
+use futures_util::{Stream, StreamExt, stream::FuturesOrdered};
 use gannot::genome::{GenomicRange, SeqId};
 use std::{
-    pin::Pin, task::{Context, Poll}
+    pin::Pin,
+    task::{Context, Poll},
 };
 use tracing::warn;
+
+type IntervalData = (u32, u32, Vec<Option<f32>>);
 
 impl From<BBIReadError> for CribError {
     fn from(value: BBIReadError) -> Self {
@@ -22,7 +24,60 @@ impl From<BigWigReadOpenError> for CribError {
     }
 }
 
-trait BbiFile: Send + 'static {
+// helper function for BbiFile
+fn send_intervals(
+    tx: tokio::sync::mpsc::Sender<Result<Value, CribError>>,
+    maybe_data_interval: Result<Box<dyn Iterator<Item = Result<Value, BBIReadError>>>, CribError>,
+) {
+    match maybe_data_interval {
+        Ok(data_interval) => {
+            for value in data_interval {
+                let value = value.map_err(|err| err.into());
+                if let Err(tokio::sync::mpsc::error::SendError(err)) = tx.blocking_send(value) {
+                    if let Err(crib_err) = err {
+                        warn!(
+                            "Message channel for a bigWigThread ended early. {}",
+                            crib_err
+                        );
+                    } else {
+                        warn!("Message channel for a bigWigThread ended early.");
+                    }
+                    break;
+                }
+            }
+        }
+        Err(err) => {
+            if let Err(tokio::sync::mpsc::error::SendError(err)) = tx.blocking_send(Err(err)) {
+                if let Err(crib_err) = err {
+                    warn!(
+                        "Message channel for a bigWigThread ended early. {}",
+                        crib_err
+                    );
+                } else {
+                    warn!("Message channel for a bigWigThread ended early.");
+                }
+            }
+        }
+    }
+}
+
+trait BbiFile: Sized + Send + 'static {
+    fn spawn_into_receiver(
+        self,
+        seqid: SeqId,
+        coord_start: u32,
+        coord_end: u32,
+    ) -> tokio::sync::mpsc::Receiver<Result<Value, CribError>> {
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<Value, CribError>>(CHANNEL_BUFFER_SIZE);
+        let seqid = seqid.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let maybe_data_interval = self.get_intervals(&seqid, coord_start, coord_end);
+            send_intervals(tx, maybe_data_interval);
+        });
+        rx
+    }
+
     fn get_intervals(
         self,
         seqid: &SeqId,
@@ -32,13 +87,14 @@ trait BbiFile: Send + 'static {
 }
 
 trait BbiFileLocation {
-    async fn open(self) -> Result<Vec<impl BbiFile>, CribError>;
+    async fn open(self) -> Result<impl IntoIterator<Item = impl BbiFile>, CribError>;
 }
 
 impl BbiFileLocation for FileLocation {
-    async fn open(self) -> Result<Vec<impl BbiFile>, CribError> {
+    async fn open(self) -> Result<impl IntoIterator<Item = impl BbiFile>, CribError> {
         match self {
             FileLocation::Local(input_file) => {
+                // blocking and not spawning a thread as opening a local file is presumably quite fast
                 let local_file = std::fs::File::open(input_file)?;
                 Ok::<_, CribError>(vec![BigWigFile::Local(local_file)])
             }
@@ -56,8 +112,8 @@ impl BbiFileLocation for FileLocation {
                     .collect();
                 Ok(readers)
             }
+        }
     }
-}
 }
 
 #[non_exhaustive]
@@ -67,96 +123,47 @@ enum BigWigFile {
 }
 
 impl BbiFile for BigWigFile {
+    // this is blocking and is meant to be called by spawn_into_stream
     fn get_intervals(
         self,
         seqid: &SeqId,
         coord_start: u32,
         coord_end: u32,
-    ) -> Result<Box<dyn Iterator<Item = Result<Value, BBIReadError>>>, CribError>
-    {
+    ) -> Result<Box<dyn Iterator<Item = Result<Value, BBIReadError>>>, CribError> {
         match self {
             BigWigFile::Local(file) => {
                 let bw_file = bigtools::BigWigRead::open(file)?;
-                let iter = Box::new(bw_file.get_interval_move(seqid.as_str(), coord_start, coord_end)?);
+                let iter =
+                    Box::new(bw_file.get_interval_move(seqid.as_str(), coord_start, coord_end)?);
                 Ok(iter)
-            },
+            }
             BigWigFile::Remote(remote_file) => {
                 let bw_file = bigtools::BigWigRead::open(remote_file)?;
-                let iter = Box::new(bw_file.get_interval_move(seqid.as_str(), coord_start, coord_end)?);
+                let iter =
+                    Box::new(bw_file.get_interval_move(seqid.as_str(), coord_start, coord_end)?);
                 Ok(iter)
             }
         }
     }
 }
 
-struct BbiThread {
-    rx: tokio::sync::mpsc::Receiver<Result<Value, CribError>>,
-}
-
-impl BbiThread {
-    fn send_intervals(
-        tx: tokio::sync::mpsc::Sender<Result<Value, CribError>>,
-        maybe_data_interval: 
-        Result<Box<dyn Iterator<Item = Result<Value, BBIReadError>>>, CribError>
-    ) {
-        match maybe_data_interval {
-            Ok(data_interval) => {
-                for value in data_interval {
-                    let result = tx.blocking_send(value.map_err(|err| err.into()));
-                    if result.is_err() {
-                        warn!("Message channel for a bigWigThread ended early.");
-                        break;
-                    }
-                }
-            },
-            Err(err) => {
-                let result = tx.blocking_send(Err(err));
-                if result.is_err() {
-                    warn!("Message channel for a bigWigThread ended early.");
-                }
-            },
-        }
-    }
-
-    fn new(file: impl BbiFile + 'static, seqid: &SeqId, coord_start: u32, coord_end: u32) -> BbiThread {
-        let (tx, rx) = tokio::sync::mpsc::channel::<Result<Value, CribError>>(CHANNEL_BUFFER_SIZE);
-        let seqid = seqid.clone();
-
-        tokio::task::spawn_blocking(move || {
-            let maybe_data_interval = file.get_intervals(&seqid, coord_start, coord_end);
-            Self::send_intervals(tx, maybe_data_interval);
-        });
-
-        BbiThread { rx }
-    }
-
-}
-
 struct BbiDataSlider {
-    thread: BbiThread,
+    rx: tokio::sync::mpsc::Receiver<Result<Value, CribError>>,
+    _name: String,
     latest_value: Option<Value>,
-    finished: bool,
 }
 
 impl Stream for BbiDataSlider {
     type Item = Result<Value, CribError>;
 
-    fn poll_next(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> Poll<Option<Self::Item>> {
-        if self.finished {
-            return Poll::Ready(None);
-        }
-
-        match self.thread.rx.poll_recv(cx) {
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        match self.rx.poll_recv(cx) {
             Poll::Ready(None) => {
-                self.finished = true;
                 self.latest_value = None;
                 Poll::Ready(None)
             }
             Poll::Pending => {
-                // poll_recv has arranged for the waker to be notified
+                // the underlying receiver has arranged for the waker to be notified
                 Poll::Pending
             }
             Poll::Ready(Some(maybe_value)) => {
@@ -183,9 +190,7 @@ impl Stream for BbiDataSlider {
                 if let Ok(value) = value {
                     self.latest_value = Some(value);
                 } else {
-                    // if there is an error, this will be the last value
                     self.latest_value = None;
-                    self.finished = true;
                 }
                 Poll::Ready(Some(value))
             }
@@ -194,11 +199,19 @@ impl Stream for BbiDataSlider {
 }
 
 impl BbiDataSlider {
-    async fn new(thread: BbiThread) -> Result<BbiDataSlider, CribError> {
+    async fn new<T: BbiFile>(
+        bw_file: T,
+        name: String,
+        seqid: SeqId,
+        coord_start: u32,
+        coord_end: u32,
+    ) -> Result<BbiDataSlider, CribError> {
+        let rx = bw_file.spawn_into_receiver(seqid, coord_start, coord_end);
+
         let mut data_slide = BbiDataSlider {
-            thread,
+            rx,
+            _name: name,
             latest_value: None,
-            finished: false,
         };
         if let Some(Err(err)) = data_slide.next().await {
             Err(err)
@@ -253,27 +266,28 @@ impl BbiDataSlider {
         }
     }
 
-    async fn advance_towards(&mut self, upto: u32) -> Result<(), CribError> {
-        match self.latest_value {
-            None => Ok(()),
-            Some(current_value) => {
-                if upto >= current_value.end {
-                    match self.next().await {
-                        None => Ok(()),
-                        Some(Ok(_)) => Ok(()),
-                        Some(Err(err)) => Err(err),
-                    }
-                } else {
-                    Ok(())
-                }
-            }
+    // this can return None when there is nothing to fetch less than upto
+    fn gated_poll(
+        &mut self,
+        upto: u32,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Value, CribError>>> {
+        if self
+            .latest_value
+            .is_some_and(|latest_value| upto >= latest_value.end)
+        {
+            self.poll_next_unpin(cx)
+        } else {
+            Poll::Ready(None)
         }
     }
 }
 
 enum BbiMuxState {
-    Start,
-    Advancing(usize, u32), // bigtools uses u32 for coordinates
+    Init,
+    GetStart,
+    AdvanceInStep(usize, u32), // bigtools uses u32 for coordinates
+    Finished,
 }
 
 /// Multiplexes iteration over BBI files within a single genomic range (single seqid)
@@ -285,7 +299,7 @@ struct BbiMux {
 
 impl BbiMux {
     async fn try_open(
-        input_files: Vec<impl BbiFileLocation>,
+        input_files: impl IntoIterator<Item = impl BbiFileLocation>,
         location: GenomicRange,
     ) -> Result<BbiMux, CribError> {
         let range = location.range_0halfopen();
@@ -300,23 +314,21 @@ impl BbiMux {
             )
         })?;
 
-        let mut futures: FuturesOrdered<_> = input_files
-            .into_iter()
-            .map(|file| file.open())
-            .collect();
+        let mut futures: FuturesOrdered<_> =
+            input_files.into_iter().map(|file| file.open()).collect();
 
         let mut next_futures = FuturesOrdered::new();
         let seqid = location.seqid();
+        let mut file_count = 1;
         while let Some(file_result) = futures.next().await {
             let file_result = file_result?;
             let new_sliders: Vec<_> = file_result
                 .into_iter()
                 .map(|file| {
+                    let name = file_count.to_string();
+                    file_count += 1;
                     let seqid = seqid.clone();
-                    tokio::task::spawn_blocking(move || {
-                        let thread = BbiThread::new(file, &seqid, coord_start, coord_end);
-                        BbiDataSlider::new(thread)
-                    })
+                    BbiDataSlider::new(file, name, seqid, coord_start, coord_end)
                 })
                 .collect();
             next_futures.extend(new_sliders);
@@ -324,63 +336,70 @@ impl BbiMux {
 
         let mut data_sliders = Vec::new();
         while let Some(data_slider) = next_futures.next().await {
-            let data_slider = data_slider.unwrap().await?;
-            data_sliders.push(data_slider);
+            data_sliders.push(data_slider?);
         }
-
-        let start = data_sliders
-            .iter()
-            .map(|ds| ds.next_start(None))
-            .filter(|start| start.is_some())
-            .min()
-            .flatten();
 
         Ok(BbiMux {
             data_sliders,
-            start,
-            state: BbiMuxState::Start,
+            start: None,
+            state: BbiMuxState::Init,
         })
     }
 }
 
 impl Stream for BbiMux {
-    type Item = Result<(u32, u32, Vec<Option<f32>>), CribError>;
+    type Item = Result<IntervalData, CribError>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        // assumes start is None if data_sliders has length of 0
-        while let Some(start) = self.start {
+        loop {
             match self.state {
-                BbiMuxState::Start => {
-                    let end: Result<Vec<_>, _> = self
+                BbiMuxState::Init => {
+                    let start = self
                         .data_sliders
                         .iter()
-                        .map(|ds| ds.next_end(start))
-                        .collect();
-                    let end = end?.into_iter().filter(|end| end.is_some()).min().flatten();
-                    let end = end.ok_or(CribError::InvalidDataFormat(
-                        "unexpected missing end coordinate".to_string(),
-                    ))?;
-
-                    let values: Vec<_> = self
-                        .data_sliders
-                        .iter_mut()
-                        .map(|ds| ds.value_at(start))
-                        .collect();
-                    self.state = BbiMuxState::Advancing(0, end);
-                    return Poll::Ready(Some(Ok((start, end, values))));
+                        .map(|ds| ds.next_start(None))
+                        .filter(|start| start.is_some())
+                        .min()
+                        .flatten();
+                    self.start = start;
+                    self.state = BbiMuxState::GetStart;
                 }
-                BbiMuxState::Advancing(index, end) => {
+                BbiMuxState::GetStart => {
+                    if let Some(start) = self.start {
+                        let end: Result<Vec<_>, _> = self
+                            .data_sliders
+                            .iter()
+                            .map(|ds| ds.next_end(start))
+                            .collect();
+                        let end = end?.into_iter().filter(|end| end.is_some()).min().flatten();
+                        let end = end.ok_or(CribError::InvalidDataFormat(
+                            "unexpected missing end coordinate".to_string(),
+                        ))?;
+
+                        let values: Vec<_> = self
+                            .data_sliders
+                            .iter_mut()
+                            .map(|ds| ds.value_at(start))
+                            .collect();
+                        self.state = BbiMuxState::AdvanceInStep(0, end);
+                        return Poll::Ready(Some(Ok((start, end, values))));
+                    } else {
+                        self.state = BbiMuxState::Finished;
+                        break;
+                    }
+                }
+                BbiMuxState::AdvanceInStep(index, end) => {
                     let mut i = index;
+
                     for ds in self.data_sliders[index..].iter_mut() {
-                        let mut future = Box::pin(ds.advance_towards(end));
-                        match future.poll_unpin(cx) {
-                            Poll::Ready(Ok(_)) => i += 1,
+                        match ds.gated_poll(end, cx) {
+                            Poll::Ready(Some(Err(err))) => return Poll::Ready(Some(Err(err))),
+                            Poll::Ready(_) => i += 1,
                             Poll::Pending => break,
-                            Poll::Ready(Err(err)) => return Poll::Ready(Some(Err(err))),
                         }
                     }
                     if i < self.data_sliders.len() {
-                        self.state = BbiMuxState::Advancing(i, end);
+                        self.state = BbiMuxState::AdvanceInStep(i, end);
                         // waker will be notified within data_slider that returned Poll::Pending
                         return Poll::Pending;
                     } else {
@@ -391,9 +410,10 @@ impl Stream for BbiMux {
                             .filter(|start| start.is_some())
                             .min()
                             .flatten();
-                        self.state = BbiMuxState::Start;
+                        self.state = BbiMuxState::GetStart;
                     }
                 }
+                BbiMuxState::Finished => break,
             }
         }
         std::task::Poll::Ready(None)
@@ -408,7 +428,7 @@ pub struct DataStream {
 
 impl DataStream {
     pub async fn try_open(
-        input_files: Vec<FileLocation>,
+        input_files: impl IntoIterator<Item = FileLocation>,
         location: GenomicRange,
     ) -> Result<DataStream, CribError> {
         let seqid = location.seqid().clone();

@@ -24,7 +24,7 @@ struct MockFileLocation {
 }
 
 impl BbiFileLocation for MockFileLocation {
-    async fn open(self) -> Result<Vec<impl BbiFile>, CribError> {
+    async fn open(self) -> Result<impl IntoIterator<Item = impl BbiFile>, CribError> {
         Ok(vec![self.data])
     }
 }

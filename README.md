@@ -24,7 +24,7 @@ Genomic track files come in many varieties. One of the most common binary file f
 The associated library's API is not stable. It is likely that it will change substantially.
 
 ## Limitations
-1\. Currently, the library used for accessing BigWig files ([bigtools](https://crates.io/crates/bigtools)) breaks up large queries into smaller queries (blocks) suitable for caching (10 KB). It then queries using [attohttp](https://crates.io/crates/attohttp), which is fast, but sync. This means that:
+1\. Currently, the library used for accessing BigWig files ([bigtools](https://crates.io/crates/bigtools)) breaks up large queries into smaller queries (blocks) suitable for caching (10 KB). It then queries using [attohttpc](https://crates.io/crates/attohttpc), which is fast, but sync. This means that:
 
 - Async cooperative reading of multiple files is not possible with **bigtools**. Therefore **crib** spawns an OS thread for every file accessed concurrently. This shouldn't be a problem on a conventional computer, but it could impact throughput in resource-constrained environments.
 - Querying large genomic regions means a large number of *get* requests will be made e.g. to your S3 instance. This might have cost or throttling implications.

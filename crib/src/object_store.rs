@@ -1,9 +1,13 @@
-use std::{sync::Arc, time::Duration};
 use async_trait::async_trait;
-use aws_config::{meta::region::RegionProviderChain, BehaviorVersion};
+use aws_config::{BehaviorVersion, meta::region::RegionProviderChain};
 use aws_sdk_s3::config::ProvideCredentials;
 use http::Method;
-use object_store::{aws::{AmazonS3, AmazonS3Builder}, signer::Signer, BackoffConfig, ObjectStore, RetryConfig};
+use object_store::{
+    ObjectStore,
+    aws::{AmazonS3, AmazonS3Builder},
+    signer::Signer,
+};
+use std::{sync::Arc, time::Duration};
 use url::Url;
 
 use crate::Error as CribError;
@@ -18,7 +22,9 @@ impl From<::object_store::Error> for CribError {
     }
 }
 
-pub async fn use_aws_config(object_url: &Url) -> Result<(Arc<AmazonS3>, object_store::path::Path), CribError> {
+pub async fn use_aws_config(
+    object_url: &Url,
+) -> Result<(Arc<AmazonS3>, object_store::path::Path), CribError> {
     let (_, path) = object_store::parse_url(object_url)?;
 
     let region_provider = RegionProviderChain::default_provider().or_else("useast-1");
@@ -27,14 +33,10 @@ pub async fn use_aws_config(object_url: &Url) -> Result<(Arc<AmazonS3>, object_s
         .load()
         .await;
     let region = config.region().unwrap();
+
     let mut builder = AmazonS3Builder::from_env()
         .with_region(region.to_string())
-        .with_url(object_url.as_str())
-        .with_retry(RetryConfig {
-            backoff: BackoffConfig::default(),
-            max_retries: 0,
-            retry_timeout: Duration::default(),
-        });
+        .with_url(object_url.as_str());
     if let Some(endpoint_url) = config.endpoint_url() {
         builder = builder.with_endpoint(endpoint_url.to_string());
     }
@@ -46,32 +48,31 @@ pub async fn use_aws_config(object_url: &Url) -> Result<(Arc<AmazonS3>, object_s
             let storage = Arc::new(builder.build()?);
             Ok((storage, path))
         }
-        None => Err(CribError::ObjectStore("credentials were not provided".to_string())),
+        None => Err(CribError::ObjectStore(
+            "credentials were not provided".to_string(),
+        )),
     }
 }
 
 pub async fn presigned_urls(s3_url: &Url) -> Result<Vec<Url>, CribError> {
+    const LEASE: Duration = Duration::from_secs(24 * 60 * 60);
+
     let mut presigned_urls = Vec::new();
     let (object_store, path) = use_aws_config(s3_url).await?;
     if s3_url.path().ends_with('/') {
-        let listing = object_store
-            .list_with_delimiter(Some(&path))
-            .await?;
+        let listing = object_store.list_with_delimiter(Some(&path)).await?;
         for object in listing.objects {
             let url = object_store
-                .signed_url(Method::GET, &object.location, Duration::from_secs(5 * 60))
+                .signed_url(Method::GET, &object.location, LEASE)
                 .await?;
             presigned_urls.push(url);
         }
     } else {
-        let url = object_store
-            .signed_url(Method::GET, &path, Duration::from_secs(5 * 60))
-            .await?;
+        let url = object_store.signed_url(Method::GET, &path, LEASE).await?;
         presigned_urls.push(url);
     }
     Ok(presigned_urls)
 }
-
 
 #[derive(Debug)]
 struct AwsCredentialProvider {

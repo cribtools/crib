@@ -15,6 +15,8 @@ pub enum Error {
     IoError(String),
     #[error("invalid data format: {0}")]
     InvalidDataFormat(String),
+    #[error("invalid file format: {0}")] // TODO: reduce variants?
+    InvalidFileFormat(String),
     #[error("internal error: {0}")]
     InternalError(String),
 }
