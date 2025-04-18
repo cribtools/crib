@@ -1,7 +1,7 @@
 # Crib
 Crib is a library for reading genome track files, mainly to support [cribtools](https://crates.io/crates/cribtools).
 
-Its functionality is currently limited to reading bigWig files using [bigtools](https://crates.io/crates/bigtools).
+Its API is far from stable and is likely to change substantially. Functionality is currently limited to reading bigWig files using [bigtools](https://crates.io/crates/bigtools).
 
 # License
 Licensed under either

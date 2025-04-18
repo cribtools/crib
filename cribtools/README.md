@@ -1,5 +1,5 @@
 # Cribtools
-Cribtools is a CLI for reading genome track files.
+Cribtools packages the **crib** CLI for reading genome track files.
 
 Its functionality is currently limited to reading bigWig files using [bigtools](https://crates.io/crates/bigtools).
 
