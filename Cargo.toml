@@ -2,12 +2,12 @@
 members = ["crib"]
 
 [workspace.package]
-version = "0.1.4"
+version = "0.2.0"
 authors = ["Garth Ilsley"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/cribtools/crib"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 
 [workspace.dependencies]
 gannot = { version = "0.1.0" }
@@ -27,7 +27,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-crib = { version = "0.1.4", path = "crib" }
+crib = { version = "0.2.0", path = "crib" }
 gannot.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "rt-multi-thread"] }
 

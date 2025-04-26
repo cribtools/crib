@@ -1,5 +1,3 @@
-#![feature(let_chains)]
-
 pub mod bbi;
 pub mod file;
 pub mod object_store;
